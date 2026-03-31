@@ -51,10 +51,7 @@ A console-based Library Management System written in C++, backed by a SQLite dat
 \### Compile
 
 
-
-```
-
-&#x20;  bash
+```bash
 
 g++ library.cpp libsqlite3.a -o a
 
