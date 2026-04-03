@@ -148,6 +148,7 @@ class Library {
     }  
 
     //users methods
+
     void addUser(std::string first_name, std::string last_name,
                  std::string email, std::string password) {
         const char* sql = "INSERT INTO users (first_name, last_name, email, password) VALUES (?, ?, ?, ?);";
@@ -221,8 +222,37 @@ class Library {
     }
 
     //book methods
+    bool userExists(int id) {
+        const char* sql = "SELECT id FROM users WHERE id=?;";
+        sqlite3_stmt* stmt = nullptr;
+        bool exists = false;
+        // if the sql query is correctly compiled
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            // we raplace the place holder with the actual id
+            sqlite3_bind_int(stmt, 1, id);
+            //execute the query with the id of the user in the placeholder
+            exists = (sqlite3_step(stmt) == SQLITE_ROW);
+            //returns true if the row exists or false otherwise
+        }
+        if (stmt) sqlite3_finalize(stmt);
+        return exists;
+    }
 
-        void getActiveIssuedBooks() {
+    bool userExists(int id) {
+        const char* sql = "SELECT id FROM users WHERE id=?;";
+        sqlite3_stmt* stmt = nullptr;
+        bool exists = false;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int(stmt, 1, id);
+            exists = (sqlite3_step(stmt) == SQLITE_ROW);
+        }
+        if (stmt) sqlite3_finalize(stmt);
+        return exists;
+    }
+
+
+
+    void getActiveIssuedBooks() {
         const char* sql =
             "SELECT u.first_name, u.last_name, u.email, b.id "
             "FROM book_issues bi "
@@ -249,13 +279,26 @@ class Library {
             std::cout << "\nNo active issued books.\n";
         }
     
-        }
+    }
 
 
 
  
 
     void issuebook(int book_id, int user_id) {
+        if (!userExists(user_id)) {
+            std::cout << "\nUser ID " << user_id << " does not exist.\n";
+            return;
+        }
+        if (!bookExists(book_id)) {
+            std::cout << "\nBook ID " << book_id << " does not exist.\n";
+            return;
+        }
+        if (bookIsIssued(book_id)) {
+            std::cout << "\nThis book is already issued.\n";
+            return;
+        }
+        
         const char* sql = "INSERT INTO book_issues (user_id, book_id) VALUES (?, ?);";
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) { // -1 means that sql reads the string until \0 meaning that it is calculating its length
@@ -292,49 +335,58 @@ class Library {
         
     }
 
-    void returnbook(int book_id, int user_id) {
-    sqlite3_stmt* stmt = nullptr;
+    void returnbook(int Book_id, int User_id) {
+        sqlite3_stmt* stmt = nullptr;
+        if (!userExists(user_id)) {
+            std::cout << "\nUser ID " << user_id << " does not exist.\n";
+            return;
+        }
+        if (!bookExists(book_id)) {
+            std::cout << "\nBook ID " << book_id << " does not exist.\n";
+            return;
+        }
+    
 
-    // 1️Verify this user actually borrowed the book
-    const char* check_sql =
-        "SELECT id FROM book_issues "
-        "WHERE book_id=? AND user_id=? AND return_date IS NULL;";
-
-    if (sqlite3_prepare_v2(db, check_sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        std::cerr << sqlite3_errmsg(db) << "\n";
-        return;
+        // 1️Verify this user actually borrowed the book
+        const char* check_sql =
+            "SELECT id FROM book_issues "
+            "WHERE book_id=? AND user_id=? AND return_date IS NULL;";
+    
+        if (sqlite3_prepare_v2(db, check_sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            std::cerr << sqlite3_errmsg(db) << "\n";
+            return;
+        }
+    
+        sqlite3_bind_int(stmt, 1, book_id);
+        sqlite3_bind_int(stmt, 2, user_id);
+    
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    
+        if (rc != SQLITE_ROW) {
+            std::cout << "\nThis user does not have this book issued.\n";
+            return;
+        }
+    
+        // 2️Mark book as returned 
+        const char* return_sql =
+            "UPDATE books SET is_issued=0 WHERE id=?;";
+    
+        if (sqlite3_prepare_v2(db, return_sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            std::cerr << sqlite3_errmsg(db) << "\n";
+            return;
+        }
+    
+        sqlite3_bind_int(stmt, 1, book_id);
+    
+        if (sqlite3_step(stmt) == SQLITE_DONE) {
+            std::cout << "\nBook returned successfully.\n";
+        } else {
+            std::cerr << "\nError returning book: " << sqlite3_errmsg(db) << "\n";
+        }
+    
+        if (stmt) sqlite3_finalize(stmt);
     }
-
-    sqlite3_bind_int(stmt, 1, book_id);
-    sqlite3_bind_int(stmt, 2, user_id);
-
-    int rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-
-    if (rc != SQLITE_ROW) {
-        std::cout << "\nThis user does not have this book issued.\n";
-        return;
-    }
-
-    // 2️Mark book as returned 
-    const char* return_sql =
-        "UPDATE books SET is_issued=0 WHERE id=?;";
-
-    if (sqlite3_prepare_v2(db, return_sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        std::cerr << sqlite3_errmsg(db) << "\n";
-        return;
-    }
-
-    sqlite3_bind_int(stmt, 1, book_id);
-
-    if (sqlite3_step(stmt) == SQLITE_DONE) {
-        std::cout << "\nBook returned successfully.\n";
-    } else {
-        std::cerr << "\nError returning book: " << sqlite3_errmsg(db) << "\n";
-    }
-
-    if (stmt) sqlite3_finalize(stmt);
-}
 
 
  
@@ -363,16 +415,15 @@ class Library {
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
             std::string pattern = "%" + title + "%";
             sqlite3_bind_text(stmt, 1, pattern.c_str(),-1, SQLITE_TRANSIENT);
-            if (sqlite3_step(stmt) == SQLITE_ROW) { 
+            while (sqlite3_step(stmt) == SQLITE_ROW) { 
                 std::cout << "Id: " << sqlite3_column_int(stmt, 0)
                           << " | Title: " << sqlite3_column_text(stmt, 1)
                           << " | Author: " << sqlite3_column_text(stmt, 2) << "\n";
                          
-            } else {
-                std::cout << "\nBook not found.\n";
-            }
+            } 
         }
         if (stmt) sqlite3_finalize(stmt);
+        if (!found) std::cout << "\nBook not found.\n";
     
     }
      
