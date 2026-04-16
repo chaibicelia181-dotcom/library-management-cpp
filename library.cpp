@@ -1,168 +1,108 @@
-#include<iostream>
-#include"sqlite3.h"
-#include<string>
-#include<vector>
+#include <iostream>
+#include <string>
 #include <stdexcept>
 #include <limits>
+#include "sqlite3.h"
 
 
-
-class User {
-    private:
-    int user_id;
-    std::string first_name;
-    std::string last_name;
-    std::string password;
-    std::string email;
-
-    public:
-    User(){
-        user_id = 0;
-        first_name = "Enter your first name";
-        last_name = "Enter your last name";
-        email ="abcd@mail.com";
-        password  = "****";
-    }
-    User(int I,std::string P,std::string E,std::string F,std::string L){
-        email = E;
-        password = P;
-        first_name = F;
-        last_name = L;
-        user_id = I;
-    }
-    int getUserId() const{
-        return user_id;
-
-    }
-    std::string getemail() const{
-        return email;
-    }
-    bool checkpassword(const std::string& ent_password) {
-        return password == ent_password;
-    }
-    std::string get_first_name() const{
-        return first_name;
-    }
-    std::string get_last_name() const{
-        return last_name;
-    }
-    void displayUsers(){
-        std::cout <<"id: "<< user_id
-        <<"| First name: " << first_name
-        <<"| Last name: " << last_name
-        <<"| Email: " <<email;
-    
-    }
-};
-
-class Book {
-    private:
-    int bookId;
-    std::string title;
-    std::string author;
-    int isIssued;
-
-    public:
-    Book(){
-        title = "Unknown";
-        author = "Unknown";
-        bookId = 0;
-        isIssued = 0;
-
-    }
-    Book(std::string T,std::string A, int x){
-        bookId = x;
-        author = A;
-        title  =T;
-        isIssued = 0;
-  
-    }
-    int getId() const{
-        return bookId;  
-    }
-    
-    int getstatus () const{
-        return isIssued;
-    }
-    void displayBook(){
-        std::cout << "ID: " << bookId
-        << "| Title: " << title
-        <<"| Author: " <<author
-        <<"| Status: " << (isIssued ? "issued" : "Available")
-        << "\n";
-    }
-    void issuebook(){
-        isIssued = 1;
-    }
-    void markReturned(){
-        isIssued = 0;
-    }
-};
-
-class BookIssue {
+class Library {
 private:
-    int issue_id;
-    int user_id;
-    int book_id;
-    int isReturned;   // 0 = not returned, 1 = returned
+    sqlite3* db;
+
+
+    // Returns true if a row exists for the given query 
+    bool rowExists(const char* sql, int id) {
+        sqlite3_stmt* stmt = nullptr;
+        bool exists = false;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int(stmt, 1, id);
+            exists = (sqlite3_step(stmt) == SQLITE_ROW);
+        }
+        if (stmt) sqlite3_finalize(stmt);
+        return exists;
+    }
+
+    bool userExists(int id) {
+        return rowExists("SELECT id FROM users WHERE id=?;", id);
+    }
+
+    bool bookExists(int id) {
+        return rowExists("SELECT id FROM books WHERE id=?;", id);
+    }
+
+    // BUG FIX: bookIsIssued was called in issuebook() but never defined
+    bool bookIsIssued(int book_id) {
+        const char* sql =
+            "SELECT id FROM book_issues WHERE book_id=? AND return_date IS NULL;";
+        return rowExists(sql, book_id);
+    }
 
 public:
-    BookIssue(int iid, int uid, int bid)
-        : issue_id(iid), user_id(uid), book_id(bid), isReturned(0) {}
+   
 
-    int getUserId() const { return user_id; }
-    int getBookId() const { return book_id; }
-    int returned() const { return isReturned; }
-    void markReturned() { isReturned = 1; }
-};
+    Library() : db(nullptr) {
+        int rc = sqlite3_open("library.db", &db);
+        if (rc != SQLITE_OK) {
+            std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << "\n";
+            sqlite3_close(db);
+            db = nullptr;
+            throw std::runtime_error("Database open failed");
+        }
 
-//we include the poointer to the database in the library class, because it is the class that manages all the library system, and it falls to the same abstarction level as the database
-class Library {
-    private:
-    std::vector<Book> Books;
-    std::vector<User> Users;
-    std::vector<BookIssue> Issues;
-    //add the database into a the library class
-    sqlite3* db;//sqlite3* is a pointer to an open database connection
-    public:
-    Library() : db(nullptr) {// db starts as a null pointer
-    int rc = sqlite3_open("library_management_system/library.db", &db);
+        sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr);
 
-    if (rc != SQLITE_OK) {// if sqlite3 opens (if db points to an open database)
-        std::cerr << "Cannot open database: " // cerr is like cout but we use it for error messasge because it is unbuffered and appears immediatly even before the error
-                  << sqlite3_errmsg(db) << "\n"; //Returns a human-readable error message
-        sqlite3_close(db);//close the database 
-        db = nullptr;
-        throw std::runtime_error("Database open failed");// immediatly stop the executing the program
+        // Create tables if they don't exist yet
+        const char* schema =
+            "CREATE TABLE IF NOT EXISTS users ("
+            "  id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  first_name TEXT NOT NULL,"
+            "  last_name  TEXT NOT NULL,"
+            "  email      TEXT NOT NULL UNIQUE,"
+            "  password   TEXT NOT NULL"
+            ");"
+            "CREATE TABLE IF NOT EXISTS books ("
+            "  id     INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  title  TEXT NOT NULL,"
+            "  author TEXT NOT NULL"
+            ");"
+            "CREATE TABLE IF NOT EXISTS book_issues ("
+            "  id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  user_id     INTEGER NOT NULL REFERENCES users(id),"
+            "  book_id     INTEGER NOT NULL REFERENCES books(id),"
+            "  issue_date  TEXT NOT NULL DEFAULT (date('now')),"
+            "  return_date TEXT"          // NULL  = still issued
+            ");";
+
+        char* errMsg = nullptr;
+        if (sqlite3_exec(db, schema, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+            std::cerr << "Schema error: " << errMsg << "\n";
+            sqlite3_free(errMsg);
+        }
+
+        std::cout << "Database connected successfully.\n";
     }
 
-    // Enable foreign keys (IMPORTANT in SQLite)
-    sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr);
-    std::cout << "Database connected successfully.\n";
-    }
-    //deconstructor, close the database connection to avoid memory leaks 
     ~Library() {
-    if (db) {
-        sqlite3_close(db);
+        if (db) sqlite3_close(db);
     }
-    }  
 
-    //users methods
+    //user operations
 
-    void addUser(std::string first_name, std::string last_name,
-                 std::string email, std::string password) {
-        const char* sql = "INSERT INTO users (first_name, last_name, email, password) VALUES (?, ?, ?, ?);";
+    void addUser(const std::string& first_name, const std::string& last_name,
+                 const std::string& email,      const std::string& password) {
+        const char* sql =
+            "INSERT INTO users (first_name, last_name, email, password)"
+            " VALUES (?, ?, ?, ?);";
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, first_name.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 2, last_name.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 3, email.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 4, password.c_str(), -1, SQLITE_TRANSIENT);
-            if (sqlite3_step(stmt) == SQLITE_DONE) {
+            sqlite3_bind_text(stmt, 2, last_name.c_str(),  -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 3, email.c_str(),      -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 4, password.c_str(),   -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) == SQLITE_DONE)
                 std::cout << "\nUser added successfully.\n";
-            } else {
+            else
                 std::cerr << "\nError inserting user: " << sqlite3_errmsg(db) << "\n";
-            }
         }
         if (stmt) sqlite3_finalize(stmt);
     }
@@ -170,122 +110,119 @@ class Library {
     void listAllUsers() {
         const char* sql = "SELECT id, first_name, last_name, email FROM users;";
         sqlite3_stmt* stmt = nullptr;
+        bool found = false;
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            while (sqlite3_step(stmt) == SQLITE_ROW) {//SQLITE ROW = a row is available    //SQLITE_DONE = No more available row
-                int id = sqlite3_column_int(stmt, 0);//read column 0
-                const unsigned char* fn = sqlite3_column_text(stmt, 1);//read column 1 , Type is const unsigned char* (SQLite uses unsigned bytes)
-                const unsigned char* ln = sqlite3_column_text(stmt, 2);//read column 2
-                const unsigned char* em = sqlite3_column_text(stmt, 3);//read column 3
-                std::cout << "Id: " << id
-                          << " | First name: " << fn
-                          << " | Last name: " << ln
-                          << " | Email: " << em << "\n";
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                found = true;
+                std::cout << "Id: "          << sqlite3_column_int (stmt, 0)
+                          << " | First name: "<< sqlite3_column_text(stmt, 1)
+                          << " | Last name: " << sqlite3_column_text(stmt, 2)
+                          << " | Email: "     << sqlite3_column_text(stmt, 3) << "\n";
             }
         }
         if (stmt) sqlite3_finalize(stmt);
+        if (!found) std::cout << "\nNo users found.\n";
     }
 
-
-     void getUserById(int id) {  
-        const char* sql = "SELECT id, first_name, last_name, email FROM users WHERE id=?;";
+    void getUserById(int id) {
+        const char* sql =
+            "SELECT id, first_name, last_name, email FROM users WHERE id=?;";
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
             sqlite3_bind_int(stmt, 1, id);
-            if (sqlite3_step(stmt) == SQLITE_ROW) { 
-                std::cout << "Id: " << sqlite3_column_int(stmt, 0)
-                          << " | First name: " << sqlite3_column_text(stmt, 1)
+            if (sqlite3_step(stmt) == SQLITE_ROW)
+                std::cout << "Id: "          << sqlite3_column_int (stmt, 0)
+                          << " | First name: "<< sqlite3_column_text(stmt, 1)
                           << " | Last name: " << sqlite3_column_text(stmt, 2)
-                          << " | Email: " << sqlite3_column_text(stmt, 3) << "\n";
-            } else {
+                          << " | Email: "     << sqlite3_column_text(stmt, 3) << "\n";
+            else
                 std::cout << "\nUser not found.\n";
-            }
         }
         if (stmt) sqlite3_finalize(stmt);
     }
 
-    void getUserByEmail(std::string email){
-        const char* sql = "SELECT id, first_name, last_name, email FROM users WHERE email LIKE ? COLLATE NOCASE;";
-        sqlite3_stmt* stmt  = nullptr;
+    void getUserByEmail(const std::string& email) {
+        const char* sql =
+            "SELECT id, first_name, last_name, email"
+            " FROM users WHERE email LIKE ? COLLATE NOCASE;";
+        sqlite3_stmt* stmt = nullptr;
+        bool found = false;
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
             std::string pattern = "%" + email + "%";
-            sqlite3_bind_text(stmt, 1,pattern.c_str(),-1, SQLITE_TRANSIENT);
-            if (sqlite3_step(stmt) == SQLITE_ROW) { 
-                std::cout << "Id: " << sqlite3_column_int(stmt, 0)
-                          << " | First name: " << sqlite3_column_text(stmt, 1)
+            sqlite3_bind_text(stmt, 1, pattern.c_str(), -1, SQLITE_TRANSIENT);
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                found = true;
+                std::cout << "Id: "          << sqlite3_column_int (stmt, 0)
+                          << " | First name: "<< sqlite3_column_text(stmt, 1)
                           << " | Last name: " << sqlite3_column_text(stmt, 2)
-                          << " | Email: " << sqlite3_column_text(stmt, 3) << "\n";
-            } else {
-                std::cout << "\nUser not found.\n";
+                          << " | Email: "     << sqlite3_column_text(stmt, 3) << "\n";
             }
         }
-        if(stmt) sqlite3_finalize(stmt);
+        if (stmt) sqlite3_finalize(stmt);
+        if (!found) std::cout << "\nUser not found.\n";
     }
 
-    //book methods
-    bool userExists(int id) {
-        const char* sql = "SELECT id FROM users WHERE id=?;";
+    //book operations
+
+    void addBook(const std::string& title, const std::string& author) {
+        const char* sql = "INSERT INTO books (title, author) VALUES (?, ?);";
         sqlite3_stmt* stmt = nullptr;
-        bool exists = false;
-        // if the sql query is correctly compiled
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            // we raplace the place holder with the actual id
-            sqlite3_bind_int(stmt, 1, id);
-            //execute the query with the id of the user in the placeholder
-            exists = (sqlite3_step(stmt) == SQLITE_ROW);
-            //returns true if the row exists or false otherwise
+            sqlite3_bind_text(stmt, 1, title.c_str(),  -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, author.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) == SQLITE_DONE)
+                std::cout << "\nBook added successfully.\n";
+            else
+                std::cerr << "\nError inserting book: " << sqlite3_errmsg(db) << "\n";
         }
         if (stmt) sqlite3_finalize(stmt);
-        return exists;
     }
 
-    bool userExists(int id) {
-        const char* sql = "SELECT id FROM users WHERE id=?;";
-        sqlite3_stmt* stmt = nullptr;
-        bool exists = false;
-        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt, 1, id);
-            exists = (sqlite3_step(stmt) == SQLITE_ROW);
-        }
-        if (stmt) sqlite3_finalize(stmt);
-        return exists;
-    }
-
-
-
-    void getActiveIssuedBooks() {
+    void displayBooks() {
         const char* sql =
-            "SELECT u.first_name, u.last_name, u.email, b.id "
-            "FROM book_issues bi "
-            "JOIN users u ON bi.user_id = u.id "
-            "JOIN books b ON bi.book_id = b.id "
-            "WHERE bi.return_date IS NULL;";
+            "SELECT b.id, b.title, b.author,"
+            "  CASE WHEN bi.id IS NOT NULL THEN 'Issued' ELSE 'Available' END AS status"
+            " FROM books b"
+            " LEFT JOIN book_issues bi"
+            "   ON b.id = bi.book_id AND bi.return_date IS NULL;";
         sqlite3_stmt* stmt = nullptr;
         bool found = false;
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
             while (sqlite3_step(stmt) == SQLITE_ROW) {
-                const unsigned char* fn = sqlite3_column_text(stmt, 0);
-                const unsigned char* ln = sqlite3_column_text(stmt, 1);
-                const unsigned char* em = sqlite3_column_text(stmt, 2);
-                int bookId = sqlite3_column_int(stmt, 3);
-                std::cout << "User: " << fn << " " << ln
-                          << " | Email: " << em
-                          << " | Book ID: " << bookId
-                          << " | Status: Issued\n";
                 found = true;
+                std::cout << "Id: "      << sqlite3_column_int (stmt, 0)
+                          << " | Title: " << sqlite3_column_text(stmt, 1)
+                          << " | Author: "<< sqlite3_column_text(stmt, 2)
+                          << " | Status: "<< sqlite3_column_text(stmt, 3) << "\n";
             }
         }
         if (stmt) sqlite3_finalize(stmt);
-        if (!found) {
-            std::cout << "\nNo active issued books.\n";
-        }
-    
+        if (!found) std::cout << "\nNo books in the library.\n";
     }
 
+    
+    void searchBook(const std::string& title) {
+        const char* sql =
+            "SELECT id, title, author FROM books WHERE title LIKE ? COLLATE NOCASE;";
+        sqlite3_stmt* stmt = nullptr;
+        bool found = false;                  
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            std::string pattern = "%" + title + "%";
+            sqlite3_bind_text(stmt, 1, pattern.c_str(), -1, SQLITE_TRANSIENT);
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                found = true;
+                std::cout << "Id: "      << sqlite3_column_int (stmt, 0)
+                          << " | Title: " << sqlite3_column_text(stmt, 1)
+                          << " | Author: "<< sqlite3_column_text(stmt, 2) << "\n";
+            }
+        }
+        if (stmt) sqlite3_finalize(stmt);
+        if (!found) std::cout << "\nBook not found.\n";
+    }
 
+    //issuing/returning
 
- 
-
-    void issuebook(int book_id, int user_id) {
+    void issueBook(int book_id, int user_id) {
         if (!userExists(user_id)) {
             std::cout << "\nUser ID " << user_id << " does not exist.\n";
             return;
@@ -298,45 +235,23 @@ class Library {
             std::cout << "\nThis book is already issued.\n";
             return;
         }
-        
-        const char* sql = "INSERT INTO book_issues (user_id, book_id) VALUES (?, ?);";
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) { // -1 means that sql reads the string until \0 meaning that it is calculating its length
-            sqlite3_bind_int(stmt, 1, user_id);
-            sqlite3_bind_int(stmt, 2, book_id);
-            if (sqlite3_step(stmt) == SQLITE_DONE) {
-                std::cout << "\nBook issued successfully.\n";
-            } else {
-                std::cerr << "\nError issuing book: " << sqlite3_errmsg(db) << "\n";
-            }
-        }
-        if (stmt) sqlite3_finalize(stmt);
-    }
 
-
-        
-    
-
-    void addbook(std::string title,std::string author) {
-
-        const char* sql = "INSERT INTO books (title, author) VALUES (?, ?);";
+        const char* sql =
+            "INSERT INTO book_issues (user_id, book_id) VALUES (?, ?);";
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, title.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 2, author.c_str(), -1, SQLITE_TRANSIENT);
-            if (sqlite3_step(stmt) == SQLITE_DONE) {
-                std::cout << "\nBook added successfully.\n";
-            } else {
-                std::cerr << "\nError inserting book: " << sqlite3_errmsg(db) << "\n";
-            }
+            sqlite3_bind_int(stmt, 1, user_id);
+            sqlite3_bind_int(stmt, 2, book_id);
+            if (sqlite3_step(stmt) == SQLITE_DONE)
+                std::cout << "\nBook issued successfully.\n";
+            else
+                std::cerr << "\nError issuing book: " << sqlite3_errmsg(db) << "\n";
         }
         if (stmt) sqlite3_finalize(stmt);
-    
-        
     }
 
-    void returnbook(int Book_id, int User_id) {
-        sqlite3_stmt* stmt = nullptr;
+  
+    void returnBook(int book_id, int user_id) {
         if (!userExists(user_id)) {
             std::cout << "\nUser ID " << user_id << " does not exist.\n";
             return;
@@ -345,184 +260,170 @@ class Library {
             std::cout << "\nBook ID " << book_id << " does not exist.\n";
             return;
         }
-    
 
-        // 1️Verify this user actually borrowed the book
+        // Verify this user actually borrowed the book and hasn't returned it yet
         const char* check_sql =
-            "SELECT id FROM book_issues "
-            "WHERE book_id=? AND user_id=? AND return_date IS NULL;";
-    
+            "SELECT id FROM book_issues"
+            " WHERE book_id=? AND user_id=? AND return_date IS NULL;";
+        sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db, check_sql, -1, &stmt, nullptr) != SQLITE_OK) {
             std::cerr << sqlite3_errmsg(db) << "\n";
             return;
         }
-    
         sqlite3_bind_int(stmt, 1, book_id);
         sqlite3_bind_int(stmt, 2, user_id);
-    
         int rc = sqlite3_step(stmt);
         sqlite3_finalize(stmt);
-    
+        stmt = nullptr;
+
         if (rc != SQLITE_ROW) {
             std::cout << "\nThis user does not have this book issued.\n";
             return;
         }
-    
-        // 2️Mark book as returned 
+
+        // Mark the issue record as returned 
         const char* return_sql =
-            "UPDATE books SET is_issued=0 WHERE id=?;";
-    
-        if (sqlite3_prepare_v2(db, return_sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            std::cerr << sqlite3_errmsg(db) << "\n";
-            return;
+            "UPDATE book_issues SET return_date = date('now')"
+            " WHERE book_id=? AND user_id=? AND return_date IS NULL;";
+        if (sqlite3_prepare_v2(db, return_sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int(stmt, 1, book_id);
+            sqlite3_bind_int(stmt, 2, user_id);
+            if (sqlite3_step(stmt) == SQLITE_DONE)
+                std::cout << "\nBook returned successfully.\n";
+            else
+                std::cerr << "\nError returning book: " << sqlite3_errmsg(db) << "\n";
         }
-    
-        sqlite3_bind_int(stmt, 1, book_id);
-    
-        if (sqlite3_step(stmt) == SQLITE_DONE) {
-            std::cout << "\nBook returned successfully.\n";
-        } else {
-            std::cerr << "\nError returning book: " << sqlite3_errmsg(db) << "\n";
-        }
-    
         if (stmt) sqlite3_finalize(stmt);
     }
 
-
- 
-
-
-    void displaybooks(){
-        const char* sql = "SELECT id, title, author FROM books;";
+    void getActiveIssuedBooks() {
+        const char* sql =
+            "SELECT u.first_name, u.last_name, u.email,"
+            "       b.id, b.title, bi.issue_date"
+            " FROM book_issues bi"
+            " JOIN users u ON bi.user_id = u.id"
+            " JOIN books b ON bi.book_id = b.id"
+            " WHERE bi.return_date IS NULL;";
         sqlite3_stmt* stmt = nullptr;
+        bool found = false;
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            while (sqlite3_step(stmt) == SQLITE_ROW) {//SQLITE ROW = a row is available    //SQLITE_DONE = No more available row
-                int id = sqlite3_column_int(stmt, 0);//read column 0
-                const unsigned char* ti = sqlite3_column_text(stmt, 1);//read column 1 , Type is const unsigned char* (SQLite uses unsigned bytes)
-                const unsigned char* au = sqlite3_column_text(stmt, 2);//read column 2
-                std::cout << "Id: " << id
-                          << " | Title: " << ti
-                          << " | Author: " << au << "\n"; 
-                        
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                found = true;
+                std::cout << "User: "       << sqlite3_column_text(stmt, 0)
+                          << " "            << sqlite3_column_text(stmt, 1)
+                          << " | Email: "   << sqlite3_column_text(stmt, 2)
+                          << " | Book ID: " << sqlite3_column_int (stmt, 3)
+                          << " | Title: "   << sqlite3_column_text(stmt, 4)
+                          << " | Issued on: "<< sqlite3_column_text(stmt, 5)
+                          << " | Status: Issued\n";
             }
         }
         if (stmt) sqlite3_finalize(stmt);
+        if (!found) std::cout << "\nNo active issued books.\n";
     }
-
-    void searchbook(std::string title){
-        const char* sql = "SELECT id, title,author FROM books WHERE title LIKE ? COLLATE NOCASE;"; //COLLATE NOCASE makes the comparison case-insensitive and it works for ASCII letters
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            std::string pattern = "%" + title + "%";
-            sqlite3_bind_text(stmt, 1, pattern.c_str(),-1, SQLITE_TRANSIENT);
-            while (sqlite3_step(stmt) == SQLITE_ROW) { 
-                std::cout << "Id: " << sqlite3_column_int(stmt, 0)
-                          << " | Title: " << sqlite3_column_text(stmt, 1)
-                          << " | Author: " << sqlite3_column_text(stmt, 2) << "\n";
-                         
-            } 
-        }
-        if (stmt) sqlite3_finalize(stmt);
-        if (!found) std::cout << "\nBook not found.\n";
-    
-    }
-     
 };
 
-int main(){
+int main() {
     Library lib;
     int choice = 0;
-    int book_id;
-    int user_id;
-    std::string title, author,first_name,last_name,email,password;
-
+    int book_id, user_id;
+    std::string title, author, first_name, last_name, email, password;
 
     std::cout << "\n\nWelcome to our online library!\n";
 
-    while(1){
-        std::cout <<"Choose an option among these:\n";
-        std::cout<< "\nBook related operations:\n";
-        std::cout << "1.Add a book\n2.Search a book\n3.Issue a book\n4.Return a book\n5.Get active Issued books\n6.Display books\n";
-        std::cout << "\nUser related operations:\n";
-        std::cout << "7.Add user\n8.List all users\n9.Search for user by ID\n10.Search for user by email\n11.Exit\n";
-        std::cout << "Please enter a choice (1-11): ";
+    while (true) {
+        std::cout << "\nBook related operations:\n"
+                  << "  1. Add a book\n"
+                  << "  2. Search a book\n"
+                  << "  3. Issue a book\n"
+                  << "  4. Return a book\n"
+                  << "  5. Get active issued books\n"
+                  << "  6. Display all books\n"
+                  << "\nUser related operations:\n"
+                  << "  7.  Add user\n"
+                  << "  8.  List all users\n"
+                  << "  9.  Search for user by ID\n"
+                  << "  10. Search for user by email\n"
+                  << "  11. Exit\n"
+                  << "\nPlease enter a choice (1-11): ";
+
         std::cin >> choice;
         std::cout << "\n";
         std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
-        if(choice==11 ){
-            return 0;
-        }
+        if (choice == 11) return 0;
 
-        switch(choice){
+        switch (choice) {
             case 1:
                 std::cout << "Enter the title of the book: ";
-                std::getline(std::cin,title);
-                std::cout << "\nEnter the author: ";
-                std::getline(std::cin,author);
-                lib.addbook(title,author);
+                std::getline(std::cin, title);
+                std::cout << "Enter the author: ";
+                std::getline(std::cin, author);
+                lib.addBook(title, author);
                 break;
 
             case 2:
-                std::cout <<"Enter the title of the book: ";
-                std::getline(std::cin,title);
-                lib.searchbook(title);
+                std::cout << "Enter the title of the book: ";
+                std::getline(std::cin, title);
+                lib.searchBook(title);
                 break;
 
             case 3:
-                std::cout << "Enter the id of the book you want to issue: ";
+                std::cout << "Enter the book ID to issue: ";
                 std::cin >> book_id;
-                std::cout << "\nEnter the borrower's ID: ";
-                std::cin>> user_id;
-                lib.issuebook(book_id,user_id);
+                std::cout << "Enter the borrower's user ID: ";
+                std::cin >> user_id;
+                lib.issueBook(book_id, user_id);
                 break;
 
             case 4:
-                std::cout << "Enter the id of the book you want to return: ";
-                std::cin >> book_id;;
-                std::cout << "\nEnter the returner's ID: ";
-                std::cin>> user_id;
-                lib.returnbook(book_id,user_id);
+                std::cout << "Enter the book ID to return: ";
+                std::cin >> book_id;
+                std::cout << "Enter the returner's user ID: ";
+                std::cin >> user_id;
+                lib.returnBook(book_id, user_id);
                 break;
 
             case 5:
                 lib.getActiveIssuedBooks();
                 break;
-            
+
             case 6:
-                lib.displaybooks();
+                lib.displayBooks();
                 break;
-            
+
             case 7:
-                std::cout << "\nEnter the user's first name: ";
-                std::getline(std::cin,first_name);
-                std::cout << "\nEnter the user's last name: ";
-                std::getline(std::cin,last_name);
-                std::cout << "\nEnter the user's email: ";
-                std::getline(std::cin,email);
-                std::cout << "\nEnter the user's password: ";
-                std::getline(std::cin,password);
+                std::cout << "Enter the user's first name: ";
+                std::getline(std::cin, first_name);
+                std::cout << "Enter the user's last name: ";
+                std::getline(std::cin, last_name);
+                std::cout << "Enter the user's email: ";
+                std::getline(std::cin, email);
+                std::cout << "Enter the user's password: ";
+                std::getline(std::cin, password);
                 lib.addUser(first_name, last_name, email, password);
                 break;
 
-            case 8: 
+            case 8:
                 lib.listAllUsers();
                 break;
 
             case 9:
-                std::cout << "\nEnter the user's ID: ";
-                std::cin >>user_id;
-                std::cout << "\n";
+                std::cout << "Enter the user's ID: ";
+                std::cin >> user_id;
                 lib.getUserById(user_id);
                 break;
 
             case 10:
-                std::cout << "\nEnter the user's email: ";
-                std::getline(std::cin,email);
-                std::cout << "\n";
+                std::cout << "Enter the user's email: ";
+                std::getline(std::cin, email);
                 lib.getUserByEmail(email);
                 break;
+
+            default:
+                std::cout << "Invalid choice. Please enter a number between 1 and 11.\n";
+                break;
         }
-        std::cout <<"\n";  
+        std::cout << "\n";
     }
 }
